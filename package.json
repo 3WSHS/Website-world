@@ -1,0 +1,31 @@
+{
+  "name": "3d-website-project",
+  "version": "1.0.0",
+  "description": "A 3D website project similar to open-sbs.brig.ht/city structure",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "vite",
+    "start": "vite preview",
+    "build": "vite build"
+  },
+  "keywords": [
+    "3d",
+    "webgl",
+    "threejs",
+    "interactive",
+    "website"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.178.0"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ],
+  "devDependencies": {
+    "vite": "^7.0.2"
+  }
+}
