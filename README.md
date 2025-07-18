@@ -1,6 +1,6 @@
 # 3D Website Project
 
-A 3D website project inspired by the structure of [open-sbs.brig.ht/city](https://open-sbs.brig.ht/city), built with modern web technologies.
+A 3D website project you can see at https://website-world.vercel.app/
 
 ## Project Structure
 
@@ -65,8 +65,6 @@ A 3D website project inspired by the structure of [open-sbs.brig.ht/city](https:
 
 ## Development Notes
 
-- This project is designed to run independently from your chatbot server (port 8000)
-- The current setup uses port 3000 to avoid conflicts
 - The black background provides a clean canvas for 3D development
 - Event listeners are already set up for future 3D interactions
 
