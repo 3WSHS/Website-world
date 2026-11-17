@@ -20,6 +20,9 @@ let teleportStart = null;
 let teleportFrom = null;
 let teleportTo = null;
 let jungleObjects = [];
+let jungleLights = [];
+let jungleAztecGlyphTexture = null;
+let isJungleLookActive = false;
 // Store references to main towers for hover effects
 window._mainTowerMeshes = [];
 window._mainTowerGroups = [];
@@ -2527,7 +2530,7 @@ function addSecondDome() {
     const domeRadius = 18;
     // Gridded sphere (like city dome, but white and transparent)
     const gridColor = 0xffffff;
-    const gridMaterial = new THREE.LineBasicMaterial({ color: gridColor, transparent: false, opacity: 1, linewidth: 1 });
+    const gridMaterial = new THREE.LineBasicMaterial({ color: gridColor, transparent: true, opacity: 0.65 });
     const group = new THREE.Group();
     const latLines = 16, lonLines = 32;
     for (let i = 1; i < latLines; i++) {
@@ -2714,12 +2717,23 @@ function animate() {
         }
         controls.update();
     }
-    // Show jungle scene if inside second dome, hide city objects
-    if (camera.position.z < -120) {
+    // Show jungle scene if inside second dome (same black/white style)
+    const inJungle = camera.position.z < -120;
+    if (inJungle) {
         setJungleSceneVisibility(true);
-        // Optionally hide city objects here if you want
+        if (!isJungleLookActive) {
+            scene.background = new THREE.Color(0x000000);
+            // Subtle fog makes it feel more like a jungle without changing the style
+            scene.fog = new THREE.FogExp2(0x000000, 0.012);
+            isJungleLookActive = true;
+        }
     } else {
         setJungleSceneVisibility(false);
+        if (isJungleLookActive) {
+            scene.background = new THREE.Color(0x000000);
+            scene.fog = null;
+            isJungleLookActive = false;
+        }
     }
     // Billboard and float building labels
     if (window._buildingLabels) {
@@ -2829,89 +2843,179 @@ function addJungleSceneInSecondDome() {
     // Clear previous jungle objects
     for (const obj of jungleObjects) scene.remove(obj);
     jungleObjects = [];
+    for (const l of jungleLights) scene.remove(l);
+    jungleLights = [];
+
     const center = { x: 0, y: 0, z: -180 };
-    // Black base (ground)
-    const baseGeo = new THREE.CircleGeometry(13.5, 64);
+    // Keep lighting consistent with main world (bright, neutral)
+    const jungleAmbient = new THREE.AmbientLight(0xffffff, 0.9);
+    scene.add(jungleAmbient);
+    jungleLights.push(jungleAmbient);
+
+    const outlineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
+    const solidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const addOutlined = (mesh) => {
+        scene.add(mesh);
+        jungleObjects.push(mesh);
+        if (!mesh.geometry) return;
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), outlineMat);
+        edges.position.copy(mesh.position);
+        edges.rotation.copy(mesh.rotation);
+        edges.scale.copy(mesh.scale);
+        scene.add(edges);
+        jungleObjects.push(edges);
+    };
+    const placedPoints = [];
+    const tryPlace = (x, z, minDist) => {
+        for (const p of placedPoints) {
+            const dx = x - p.x;
+            const dz = z - p.z;
+            if (dx * dx + dz * dz < minDist * minDist) return false;
+        }
+        placedPoints.push({ x, z });
+        return true;
+    };
+    const baseGeo = new THREE.CircleGeometry(13.5, 96);
     const baseMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
     const base = new THREE.Mesh(baseGeo, baseMat);
     base.rotation.x = -Math.PI / 2;
     base.position.set(center.x, 0, center.z);
     scene.add(base);
     jungleObjects.push(base);
-    // Wavy beach (irregular white disc)
-    const beachSegments = 64;
-    const wavyBeachRadius = 4.5;
-    const beachCenter = { x: center.x - 6.5, y: 0.02, z: center.z };
-    // Use fixed random phases for smooth, closed shape
-    const phase1 = Math.random() * Math.PI * 2;
-    const phase2 = Math.random() * Math.PI * 2;
-    const beachShape = new THREE.Shape();
-    for (let i = 0; i <= beachSegments; i++) {
-        const angle = (i / beachSegments) * Math.PI * 2;
-        // Wavy radius with fixed phases
-        const wave = Math.sin(angle * 3 + phase1) * 0.35 + Math.cos(angle * 5 + phase2) * 0.18;
-        const r = wavyBeachRadius + wave;
-        const x = Math.cos(angle) * r;
-        const y = Math.sin(angle) * r;
-        if (i === 0) {
-            beachShape.moveTo(x, y);
-        } else {
-            beachShape.lineTo(x, y);
+    let jungleHillTopY = 0;
+
+    // River (adds structure; clean banks)
+    {
+        const curve = new THREE.CatmullRomCurve3([
+            new THREE.Vector3(center.x - 10.5, 0, center.z - 4.5),
+            new THREE.Vector3(center.x - 4.0, 0, center.z - 1.8),
+            new THREE.Vector3(center.x + 1.2, 0, center.z + 1.0),
+            new THREE.Vector3(center.x + 7.6, 0, center.z + 4.8)
+        ]);
+
+        const samples = 70;
+        const halfWidth = 1.15;
+        const left = [];
+        const right = [];
+        for (let i = 0; i <= samples; i++) {
+            const t = i / samples;
+            const p = curve.getPoint(t);
+            const tan = curve.getTangent(t);
+            const n = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+            left.push(new THREE.Vector3(p.x + n.x * halfWidth, 0.012, p.z + n.z * halfWidth));
+            right.push(new THREE.Vector3(p.x - n.x * halfWidth, 0.012, p.z - n.z * halfWidth));
         }
+
+        const shape = new THREE.Shape();
+        shape.moveTo(left[0].x - center.x, left[0].z - center.z);
+        for (let i = 1; i < left.length; i++) shape.lineTo(left[i].x - center.x, left[i].z - center.z);
+        for (let i = right.length - 1; i >= 0; i--) shape.lineTo(right[i].x - center.x, right[i].z - center.z);
+
+        const riverGeo = new THREE.ShapeGeometry(shape);
+        const river = new THREE.Mesh(riverGeo, new THREE.MeshBasicMaterial({ color: 0x050505 }));
+        river.rotation.x = -Math.PI / 2;
+        river.position.set(center.x, 0.006, center.z);
+        scene.add(river);
+        jungleObjects.push(river);
+
+        const bankPts = [...left, ...right.reverse()];
+        const bankGeo = new THREE.BufferGeometry().setFromPoints(bankPts);
+        const bankLine = new THREE.LineLoop(bankGeo, outlineMat);
+        scene.add(bankLine);
+        jungleObjects.push(bankLine);
     }
-    const beachGeo = new THREE.ShapeGeometry(beachShape);
-    const beachMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const beach = new THREE.Mesh(beachGeo, beachMat);
-    beach.rotation.x = -Math.PI / 2;
-    beach.position.set(beachCenter.x, beachCenter.y, beachCenter.z);
-    scene.add(beach);
-    jungleObjects.push(beach);
-    // Scattered rocks (small spheres/cylinders)
+
+    // Jungle hill / terraces (gives the reference image silhouette)
+    {
+        const hillCenter = new THREE.Vector3(center.x + 0.8, 0, center.z - 0.6);
+        const tierCount = 4;
+        const tierH = 0.55;
+        const baseW = 12.0;
+        const baseD = 10.5;
+        for (let t = 0; t < tierCount; t++) {
+            const inset = t * 1.65;
+            const w = Math.max(3.2, baseW - inset);
+            const d = Math.max(2.8, baseD - inset * 0.92);
+            const geo = new THREE.BoxGeometry(w, tierH, d);
+            const mesh = new THREE.Mesh(geo, solidMat);
+            mesh.position.set(hillCenter.x, t * tierH + tierH / 2, hillCenter.z);
+            addOutlined(mesh);
+        }
+
+        // Simple "path" up the hill (aligned toward the river side)
+        const stepCount = 10;
+        for (let s = 0; s < stepCount; s++) {
+            const geo = new THREE.BoxGeometry(1.6, 0.18, 0.38);
+            const mesh = new THREE.Mesh(geo, solidMat);
+            mesh.position.set(hillCenter.x, 0.1 + s * 0.18, hillCenter.z + 4.2 - s * 0.34);
+            addOutlined(mesh);
+        }
+
+        jungleHillTopY = tierCount * tierH;
+    }
+
+    // Debris (kept low + sparse)
     for (let i = 0; i < 8; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const r = Math.random() * (wavyBeachRadius - 0.7);
-        const x = Math.cos(angle) * r + beachCenter.x + (Math.random() - 0.5) * 0.3;
-        const z = Math.sin(angle) * r + beachCenter.z + (Math.random() - 0.5) * 0.3;
-        if (Math.random() < 0.5) {
-            // Sphere rock
-            const geo = new THREE.SphereGeometry(0.18 + Math.random() * 0.13, 8, 8);
-            const mat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(x, 0.13, z);
-            scene.add(mesh);
-            jungleObjects.push(mesh);
-        } else {
-            // Cylinder rock (driftwood)
-            const geo = new THREE.CylinderGeometry(0.09, 0.13, 0.38 + Math.random() * 0.18, 8, 1, true);
-            const mat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(x, 0.13, z);
-            mesh.rotation.y = Math.random() * Math.PI * 2;
-            scene.add(mesh);
-            jungleObjects.push(mesh);
-        }
+        const r = 6.0 + Math.random() * 6.2;
+        const x = center.x + Math.cos(angle) * r + (Math.random() - 0.5) * 0.4;
+        const z = center.z + Math.sin(angle) * r + (Math.random() - 0.5) * 0.4;
+        if (!tryPlace(x, z, 0.65)) continue;
+        const isLog = Math.random() < 0.4;
+        const geo = isLog
+            ? new THREE.CylinderGeometry(0.08, 0.1, 0.45 + Math.random() * 0.25, 10, 1, true)
+            : new THREE.SphereGeometry(0.16 + Math.random() * 0.12, 10, 10);
+        const mesh = new THREE.Mesh(geo, solidMat);
+        mesh.position.set(x, 0.12, z);
+        mesh.rotation.y = Math.random() * Math.PI * 2;
+        addOutlined(mesh);
     }
-    // Clusters of small palm trees near beach edge
-    for (let i = 0; i < 5; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const r = wavyBeachRadius - 0.5 + Math.random() * 0.7;
-        const x = Math.cos(angle) * r + beachCenter.x;
-        const z = Math.sin(angle) * r + beachCenter.z;
-        // Trunk
-        const trunkGeo = new THREE.CylinderGeometry(0.07, 0.09, 1.1 + Math.random() * 0.4, 8, 1, true);
-        const trunkMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true });
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.set(x, 0.55, z);
-        // Leaves (wireframe sphere cap)
-        const leavesGeo = new THREE.SphereGeometry(0.32 + Math.random() * 0.13, 8, 8, 0, Math.PI * 2, 0, Math.PI / 2);
-        const leavesMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
-        const leaves = new THREE.Mesh(leavesGeo, leavesMat);
-        leaves.position.set(x, 1.1 + Math.random() * 0.13, z);
-        scene.add(trunk);
+
+    const makePalm = (x, z, h = 1.4) => {
+        const trunkGeo = new THREE.CylinderGeometry(0.07, 0.1, h, 10, 1, true);
+        const trunk = new THREE.Mesh(trunkGeo, solidMat);
+        trunk.position.set(x, h / 2, z);
+        addOutlined(trunk);
+
+        const leavesGeo = new THREE.SphereGeometry(0.38 + Math.random() * 0.12, 10, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+        const leaves = new THREE.Mesh(leavesGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }));
+        leaves.position.set(x, h + 0.28, z);
         scene.add(leaves);
-        jungleObjects.push(trunk, leaves);
+        jungleObjects.push(leaves);
+    };
+
+    // Better tree placement: dense jungle "mass" with an open temple clearing
+    const addTreeCluster = (cx, cz, count, spread) => {
+        for (let i = 0; i < count; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const r = Math.pow(Math.random(), 0.65) * spread;
+            const x = cx + Math.cos(a) * r + (Math.random() - 0.5) * 0.35;
+            const z = cz + Math.sin(a) * r + (Math.random() - 0.5) * 0.35;
+            // keep a clearing around the hill/temple
+            if (Math.hypot(x - (center.x + 0.8), z - (center.z - 0.6)) < 4.8) continue;
+            if (!tryPlace(x, z, 0.85)) continue;
+            makePalm(x, z, 1.3 + Math.random() * 1.1);
+        }
+    };
+
+    // Outer jungle belt
+    const beltCount = 62;
+    for (let i = 0; i < beltCount; i++) {
+        const a = (i / beltCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.18;
+        const r = 10.2 + Math.random() * 2.2;
+        const x = center.x + Math.cos(a) * r;
+        const z = center.z + Math.sin(a) * r;
+        if (!tryPlace(x, z, 0.95)) continue;
+        makePalm(x, z, 1.6 + Math.random() * 1.3);
     }
-    // Aztec towers (stepped pyramids, more and smaller)
+
+    // Interior clusters (like the reference's dense jungle pockets)
+    addTreeCluster(center.x - 6.5, center.z - 3.5, 18, 2.8);
+    addTreeCluster(center.x + 6.5, center.z - 2.0, 16, 2.6);
+    addTreeCluster(center.x + 5.2, center.z + 5.0, 14, 2.6);
+    addTreeCluster(center.x - 3.0, center.z + 6.0, 12, 2.2);
+
+    // Aztec temples (proper stepped pyramids + central staircase + top temple)
     const numTemples = 12;
     const templeRadius = 6.5;
     for (let i = 0; i < numTemples; i++) {
@@ -2926,40 +3030,87 @@ function addJungleSceneInSecondDome() {
         // Skip if temple would overlap the beach
         const distToBeachCenter = Math.sqrt((x - (center.x - 6.5)) ** 2 + (z - center.z) ** 2);
         if (distToBeachCenter < 4.5 + 0.7) continue;
-        const base = 0.9 + Math.random() * 0.3;
-        const height = 1.2 + Math.random() * 0.3;
-        for (let step = 0; step < 4; step++) {
-            const stepBase = base * (1 - step * 0.18);
-            const stepHeight = height * 0.25;
-            const y = step * stepHeight + stepHeight / 2;
-            const geo = new THREE.BoxGeometry(stepBase, stepHeight, stepBase);
-            const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-            const mesh = new THREE.Mesh(geo, mat);
+        const baseSize = 1.5 + Math.random() * 0.55;
+        const stepCount = 6;
+        const stepHeight = 0.28 + Math.random() * 0.05;
+
+        // Stepped pyramid body
+        for (let step = 0; step < stepCount; step++) {
+            const shrink = 1 - (step / stepCount) * 0.62;
+            const sx = baseSize * shrink;
+            const sy = stepHeight;
+            const sz = baseSize * shrink;
+            const y = step * stepHeight + sy / 2;
+            const geo = new THREE.BoxGeometry(sx, sy, sz);
+            const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
             mesh.position.set(x, y, z);
             scene.add(mesh);
             jungleObjects.push(mesh);
-            // White wireframe
-            const edges = new THREE.EdgesGeometry(geo);
-            const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-            const line = new THREE.LineSegments(edges, lineMat);
-            line.position.set(x, y, z);
-            scene.add(line);
-            jungleObjects.push(line);
+
+            const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), outlineMat);
+            edges.position.copy(mesh.position);
+            scene.add(edges);
+            jungleObjects.push(edges);
         }
-        // --- Add trees around each temple ---
-        const treesAroundTemple = 3 + Math.floor(Math.random() * 2);
+
+        // Central staircase (front face)
+        const stairSteps = 7;
+        for (let s = 0; s < stairSteps; s++) {
+            const w = baseSize * (0.28 + s * 0.02);
+            const h = stepHeight * 0.55;
+            const d = baseSize * 0.18;
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
+            mesh.position.set(x, h / 2 + s * (stepHeight * 0.5), z + baseSize * 0.52 - s * (d * 0.35));
+            scene.add(mesh);
+            jungleObjects.push(mesh);
+
+            const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), outlineMat);
+            edges.position.copy(mesh.position);
+            scene.add(edges);
+            jungleObjects.push(edges);
+        }
+
+        // Top temple (shrine) with lintel + columns
+        const topY = stepCount * stepHeight + 0.1;
+        const shrineW = baseSize * 0.34;
+        const shrineH = stepHeight * 1.6;
+        const shrineD = baseSize * 0.24;
+        const shrineGeo = new THREE.BoxGeometry(shrineW, shrineH, shrineD);
+        const shrine = new THREE.Mesh(shrineGeo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
+        shrine.position.set(x, topY + shrineH / 2, z - baseSize * 0.02);
+        scene.add(shrine);
+        jungleObjects.push(shrine);
+        const shrineEdges = new THREE.LineSegments(new THREE.EdgesGeometry(shrineGeo), outlineMat);
+        shrineEdges.position.copy(shrine.position);
+        scene.add(shrineEdges);
+        jungleObjects.push(shrineEdges);
+
+        const colGeo = new THREE.BoxGeometry(shrineW * 0.12, shrineH * 0.82, shrineD * 0.12);
+        for (const sx of [-1, 1]) {
+            const col = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
+            col.position.set(x + sx * shrineW * 0.28, topY + shrineH * 0.42, z + shrineD * 0.36);
+            scene.add(col);
+            jungleObjects.push(col);
+            const colEdges = new THREE.LineSegments(new THREE.EdgesGeometry(colGeo), outlineMat);
+            colEdges.position.copy(col.position);
+            scene.add(colEdges);
+            jungleObjects.push(colEdges);
+        }
+
+        // --- More trees around each temple (but spaced; no clutter) ---
+        const treesAroundTemple = 4 + Math.floor(Math.random() * 3);
         for (let t = 0; t < treesAroundTemple; t++) {
             const treeAngle = angle + (t - 1) * 0.18 + (Math.random() - 0.5) * 0.1;
             const treeR = r + 1.1 + Math.random() * 0.7;
             const tx = center.x + Math.cos(treeAngle) * treeR;
             const tz = center.z + Math.sin(treeAngle) * treeR;
-            // Skip if tree would overlap the beach
-            const treeDistToBeach = Math.sqrt((tx - (center.x - 6.5)) ** 2 + (tz - center.z) ** 2);
-            if (treeDistToBeach < 4.5 + 0.3) continue;
+            if (Math.hypot(tx - center.x, tz - center.z) < 5.0) continue;
+            // Reuse spacing grid by checking against placedPoints (if present in scope)
+            if (typeof tryPlace === 'function' && !tryPlace(tx, tz, 0.9)) continue;
             // --- Enhanced tree: trunk + multiple leaf layers ---
             const trunkGeo = new THREE.CylinderGeometry(0.11, 0.15, 1.7 + Math.random() * 0.5, 10, 1, true);
-            const trunkMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true });
-            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true }));
             trunk.position.set(tx, 0.85, tz);
             scene.add(trunk);
             jungleObjects.push(trunk);
@@ -2972,15 +3123,14 @@ function addJungleSceneInSecondDome() {
                 const xOff = (Math.random() - 0.5) * 0.08;
                 const zOff = (Math.random() - 0.5) * 0.08;
                 const leavesGeo = new THREE.SphereGeometry(scale, 8, 8, 0, Math.PI * 2, 0, Math.PI / 2);
-            const leavesMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
-            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+                const leaves = new THREE.Mesh(leavesGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }));
                 leaves.position.set(tx + xOff, y, tz + zOff);
-            scene.add(leaves);
+                scene.add(leaves);
                 jungleObjects.push(leaves);
             }
         }
     }
-    // Mountains (ring around dome) - match city style
+    // Mountains (ring around dome) - keep same black + outlines style
     const segments = 32;
     const outerRadius = 15.5;
     const innerRadius = 12.5;
@@ -3062,14 +3212,13 @@ function addJungleSceneInSecondDome() {
     mesh.position.set(center.x, 0, center.z);
         scene.add(mesh);
         jungleObjects.push(mesh);
-    // White edge lines
+    // White edge lines for mountain ring
     const edgeGeo = new THREE.EdgesGeometry(geometry);
-    const edgeMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-    const edge = new THREE.LineSegments(edgeGeo, edgeMat);
+    const edge = new THREE.LineSegments(edgeGeo, outlineMat);
     edge.position.set(center.x, 0, center.z);
     scene.add(edge);
     jungleObjects.push(edge);
-    // --- Add diverse Aztec buildings (not just temples) ---
+    // --- Add diverse Aztec buildings (ruins, platforms, shrines) ---
     const numAztecBuildings = 8 + Math.floor(Math.random() * 3);
     for (let i = 0; i < numAztecBuildings; i++) {
         // Randomly pick a type
@@ -3085,58 +3234,59 @@ function addJungleSceneInSecondDome() {
             tries++;
             if (distToBeach > 5.5 || tries > 10) break;
         } while (true);
-        let mesh, line;
+        let mesh;
+        let geoForOutline = null;
         if (type === 'palace') {
             // Long rectangular palace
             const geo = new THREE.BoxGeometry(1.7 + Math.random(), 0.6 + Math.random() * 0.3, 0.7 + Math.random() * 0.4);
             mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
             mesh.position.set(bx, 0.3, bz);
-            line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-        line.position.copy(mesh.position);
+            geoForOutline = geo;
         } else if (type === 'tower') {
             // Round observatory tower
             const geo = new THREE.CylinderGeometry(0.38 + Math.random() * 0.18, 0.38 + Math.random() * 0.18, 1.1 + Math.random() * 0.5, 16, 1, true);
             mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
             mesh.position.set(bx, 0.55, bz);
-            line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-            line.position.copy(mesh.position);
+            geoForOutline = geo;
             // Add dome or cone top
             if (Math.random() < 0.5) {
                 const topGeo = new THREE.SphereGeometry(0.38, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2);
                 const top = new THREE.Mesh(topGeo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
                 top.position.set(bx, 1.1, bz);
-                const topLine = new THREE.LineSegments(new THREE.EdgesGeometry(topGeo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-                topLine.position.copy(top.position);
                 scene.add(top);
-                scene.add(topLine);
-                jungleObjects.push(top, topLine);
+                jungleObjects.push(top);
+                const topEdges = new THREE.LineSegments(new THREE.EdgesGeometry(topGeo), outlineMat);
+                topEdges.position.copy(top.position);
+                scene.add(topEdges);
+                jungleObjects.push(topEdges);
             } else {
                 const coneGeo = new THREE.ConeGeometry(0.38, 0.5, 12, 1, true);
                 const cone = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
                 cone.position.set(bx, 1.2, bz);
-                const coneLine = new THREE.LineSegments(new THREE.EdgesGeometry(coneGeo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-                coneLine.position.copy(cone.position);
                 scene.add(cone);
-                scene.add(coneLine);
-                jungleObjects.push(cone, coneLine);
+                jungleObjects.push(cone);
+                const coneEdges = new THREE.LineSegments(new THREE.EdgesGeometry(coneGeo), outlineMat);
+                coneEdges.position.copy(cone.position);
+                scene.add(coneEdges);
+                jungleObjects.push(coneEdges);
             }
         } else if (type === 'platform') {
             // Flat raised platform
             const geo = new THREE.BoxGeometry(1.2 + Math.random() * 0.7, 0.22 + Math.random() * 0.13, 1.2 + Math.random() * 0.7);
             mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
             mesh.position.set(bx, 0.12, bz);
-            line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-            line.position.copy(mesh.position);
+            geoForOutline = geo;
             // Add stairs (simple box)
             if (Math.random() < 0.7) {
                 const stairGeo = new THREE.BoxGeometry(0.32, 0.13, 0.7);
                 const stair = new THREE.Mesh(stairGeo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
                 stair.position.set(bx, 0.18, bz - 0.5);
-                const stairLine = new THREE.LineSegments(new THREE.EdgesGeometry(stairGeo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-                stairLine.position.copy(stair.position);
                 scene.add(stair);
-                scene.add(stairLine);
-                jungleObjects.push(stair, stairLine);
+                jungleObjects.push(stair);
+                const stairEdges = new THREE.LineSegments(new THREE.EdgesGeometry(stairGeo), outlineMat);
+                stairEdges.position.copy(stair.position);
+                scene.add(stairEdges);
+                jungleObjects.push(stairEdges);
             }
         } else if (type === 'shrine') {
             // Small stepped shrine
@@ -3149,17 +3299,24 @@ function addJungleSceneInSecondDome() {
                 const geo = new THREE.BoxGeometry(stepBase, stepHeight, stepBase);
                 const meshS = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
                 meshS.position.set(bx, y, bz);
-                const lineS = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-                lineS.position.copy(meshS.position);
                 scene.add(meshS);
-                scene.add(lineS);
-                jungleObjects.push(meshS, lineS);
+                jungleObjects.push(meshS);
+                const edgesS = new THREE.LineSegments(new THREE.EdgesGeometry(geo), outlineMat);
+                edgesS.position.copy(meshS.position);
+                scene.add(edgesS);
+                jungleObjects.push(edgesS);
             }
         }
-        if (mesh && line) {
-        scene.add(mesh);
-        scene.add(line);
-            jungleObjects.push(mesh, line);
+        if (mesh) {
+            scene.add(mesh);
+            jungleObjects.push(mesh);
+            if (geoForOutline) {
+                const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geoForOutline), outlineMat);
+                edges.position.copy(mesh.position);
+                edges.rotation.copy(mesh.rotation);
+                scene.add(edges);
+                jungleObjects.push(edges);
+            }
         }
     }
     // --- Add clusters of clay house structures (Aztec/Mesoamerican style) ---
@@ -3197,73 +3354,115 @@ function addJungleSceneInSecondDome() {
             geo.computeVertexNormals();
             const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x000000 }));
             mesh.position.set(bx, height / 2, bz);
-            const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
-            line.position.copy(mesh.position);
-        scene.add(mesh);
-        scene.add(line);
-            jungleObjects.push(mesh, line);
+            scene.add(mesh);
+            jungleObjects.push(mesh);
+            const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), outlineMat);
+            edges.position.copy(mesh.position);
+            scene.add(edges);
+            jungleObjects.push(edges);
         }
     }
-    // --- Add large white Aztec pyramid in the center ---
+    // --- Main Aztec temple (reference-like: broad tiers + wide stair + colonnade) ---
     const pyramidCenter = { x: center.x, z: center.z };
-    const pyramidBase = 3.8;
-    const pyramidHeight = 2.6;
-    const pyramidSteps = 9;
-    for (let s = 0; s < pyramidSteps; s++) {
-        const stepFrac = 1 - s / pyramidSteps;
-        const stepBase = pyramidBase * (0.92 + 0.08 * stepFrac) * (1 - s * 0.07);
-        const stepHeight = pyramidHeight / pyramidSteps;
-        const y = s * stepHeight + stepHeight / 2;
-        const geo = new THREE.BoxGeometry(stepBase, stepHeight, stepBase);
-        const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(pyramidCenter.x, y, pyramidCenter.z);
-        scene.add(mesh);
-        jungleObjects.push(mesh);
-        // White wireframe
-        const edges = new THREE.EdgesGeometry(geo);
-        const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-        const line = new THREE.LineSegments(edges, lineMat);
-        line.position.set(pyramidCenter.x, y, pyramidCenter.z);
-        scene.add(line);
-        jungleObjects.push(line);
+    const temple = new THREE.Group();
+    temple.position.set(pyramidCenter.x + 0.8, jungleHillTopY, pyramidCenter.z - 0.6);
+    // Scale down so the world feels larger
+    temple.scale.setScalar(0.62);
+
+    const templeSolidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const addSolidOutlined = (geo, pos, rot) => {
+        const m = new THREE.Mesh(geo, templeSolidMat);
+        m.position.copy(pos);
+        if (rot) m.rotation.copy(rot);
+        temple.add(m);
+
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), outlineMat);
+        e.position.copy(pos);
+        if (rot) e.rotation.copy(rot);
+        temple.add(e);
+    };
+
+    // Tiered base (wide, shallow steps like the reference)
+    const tierCount = 5;
+    const baseW = 8.2;
+    const baseD = 7.6;
+    const tierH = 0.55;
+    for (let t = 0; t < tierCount; t++) {
+        const inset = t * 0.78;
+        const w = Math.max(1.8, baseW - inset);
+        const d = Math.max(1.6, baseD - inset * 0.92);
+        const geo = new THREE.BoxGeometry(w, tierH, d);
+        addSolidOutlined(geo, new THREE.Vector3(0, t * tierH + tierH / 2, 0));
+
+        // Side buttress blocks to get the "massive" facade feel
+        if (t < tierCount - 1) {
+            const bW = w * 0.22;
+            const bD = d * 0.22;
+            const bGeo = new THREE.BoxGeometry(bW, tierH * 0.9, bD);
+            const y = t * tierH + tierH * 0.55;
+            addSolidOutlined(bGeo, new THREE.Vector3(w * 0.38, y, d * 0.18));
+            addSolidOutlined(bGeo, new THREE.Vector3(-w * 0.38, y, d * 0.18));
+        }
     }
-    // Central staircase (as a sloped box)
-    const stairWidth = pyramidBase * 0.22;
-    const stairHeight = pyramidHeight * 0.98;
-    const stairDepth = pyramidBase * 1.01;
-        const stairGeo = new THREE.BoxGeometry(stairWidth, stairHeight, stairDepth);
-    stairGeo.translate(0, stairHeight / 2 - pyramidHeight / 2, 0);
-        const stairMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const stair = new THREE.Mesh(stairGeo, stairMat);
-    stair.position.set(pyramidCenter.x, stairHeight / 2, pyramidCenter.z - pyramidBase * 0.39);
-    stair.rotation.x = Math.PI / 2.1;
-        scene.add(stair);
-        jungleObjects.push(stair);
-        const stairEdges = new THREE.EdgesGeometry(stairGeo);
-    const stairLine = new THREE.LineSegments(stairEdges, new THREE.LineBasicMaterial({ color: 0xffffff }));
-        stairLine.position.copy(stair.position);
-    stairLine.rotation.copy(stair.rotation);
-        scene.add(stairLine);
-        jungleObjects.push(stairLine);
-    // Small temple on top
-    const topBase = pyramidBase * 0.32;
-    const topHeight = pyramidHeight * 0.22;
-    const topGeo = new THREE.BoxGeometry(topBase, topHeight, topBase * 0.7);
-    const topMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const topMesh = new THREE.Mesh(topGeo, topMat);
-    topMesh.position.set(pyramidCenter.x, pyramidHeight + topHeight / 2, pyramidCenter.z);
-    scene.add(topMesh);
-    jungleObjects.push(topMesh);
-    const topEdges = new THREE.EdgesGeometry(topGeo);
-    const topLine = new THREE.LineSegments(topEdges, new THREE.LineBasicMaterial({ color: 0xffffff }));
-    topLine.position.copy(topMesh.position);
-    scene.add(topLine);
-    jungleObjects.push(topLine);
+
+    // Wide central staircase (composed of many small steps)
+    const stairSteps = 18;
+    const stairW = 2.4;
+    const stepH = (tierCount * tierH) / stairSteps;
+    const stepD = 0.32;
+    const frontZ = baseD * 0.5 + 0.02;
+    for (let s = 0; s < stairSteps; s++) {
+        const y = s * stepH + stepH / 2;
+        const z = frontZ - s * (stepD * 0.62);
+        const geo = new THREE.BoxGeometry(stairW * (0.88 + s * 0.01), stepH * 0.9, stepD);
+        addSolidOutlined(geo, new THREE.Vector3(0, y, z));
+    }
+
+    // Stair side rails/walls (signature of the reference)
+    const railGeo = new THREE.BoxGeometry(0.42, tierCount * tierH * 0.92, 2.35);
+    const railY = (tierCount * tierH * 0.92) / 2;
+    const railZ = baseD * 0.5 - 0.65;
+    addSolidOutlined(railGeo, new THREE.Vector3(stairW * 0.5 + 0.26, railY, railZ));
+    addSolidOutlined(railGeo, new THREE.Vector3(-stairW * 0.5 - 0.26, railY, railZ));
+
+    // Upper terrace/platform (where the colonnade sits)
+    const terraceGeo = new THREE.BoxGeometry(3.8, 0.45, 3.1);
+    addSolidOutlined(terraceGeo, new THREE.Vector3(0, tierCount * tierH + 0.225, -0.15));
+
+    // Top shrine with colonnade + roof + crest
+    const shrineY0 = tierCount * tierH + 0.45;
+    const shrineBaseGeo = new THREE.BoxGeometry(2.9, 0.55, 2.0);
+    addSolidOutlined(shrineBaseGeo, new THREE.Vector3(0, shrineY0 + 0.275, -0.25));
+
+    // Colonnade: front row columns + side hints
+    const colGeo = new THREE.BoxGeometry(0.18, 0.9, 0.18);
+    const colY = shrineY0 + 0.55 + 0.45;
+    const colZ = -0.25 + 0.82;
+    const colXs = [-1.05, -0.6, -0.15, 0.15, 0.6, 1.05];
+    for (const cx of colXs) addSolidOutlined(colGeo, new THREE.Vector3(cx, colY, colZ));
+
+    // Lintel/beam across columns
+    const lintelGeo = new THREE.BoxGeometry(2.6, 0.22, 0.28);
+    addSolidOutlined(lintelGeo, new THREE.Vector3(0, colY + 0.5, colZ));
+
+    // Roof slab with slight overhang
+    const roofGeo = new THREE.BoxGeometry(3.1, 0.28, 2.25);
+    addSolidOutlined(roofGeo, new THREE.Vector3(0, colY + 0.78, -0.25));
+
+    // Crest blocks on top (gives that stepped "crown" silhouette)
+    const crest1 = new THREE.BoxGeometry(1.5, 0.22, 0.45);
+    addSolidOutlined(crest1, new THREE.Vector3(0, colY + 1.05, -0.95));
+    const crest2 = new THREE.BoxGeometry(0.9, 0.22, 0.35);
+    addSolidOutlined(crest2, new THREE.Vector3(0, colY + 1.27, -1.05));
+
+    // Attach to world
+    scene.add(temple);
+    jungleObjects.push(temple);
 }
 
 function setJungleSceneVisibility(visible) {
     for (const obj of jungleObjects) obj.visible = visible;
+    for (const l of jungleLights) l.visible = visible;
 }
 
 // Make the city dome clickable for teleport-back
